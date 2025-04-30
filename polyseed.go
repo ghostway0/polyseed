@@ -23,7 +23,6 @@ const (
 type CryptoContext struct {
 	params rlwe.Parameters
 	ringQ  *ring.Ring
-	a      ring.Poly
 }
 
 func NewCryptoContext() (*CryptoContext, error) {
@@ -38,11 +37,6 @@ func NewCryptoContext() (*CryptoContext, error) {
 		RingType: ring.Standard,
 	}
 
-	prng, err := sampling.NewPRNG()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create PRNG: %w", err)
-	}
-
 	params, err := rlwe.NewParametersFromLiteral(paramLiteral)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create parameters: %w", err)
@@ -53,19 +47,25 @@ func NewCryptoContext() (*CryptoContext, error) {
 		return nil, fmt.Errorf("failed to create ring: %w", err)
 	}
 
-	sampler := ring.NewUniformSampler(prng, ringQ)
-	a := sampler.ReadNew()
-
 	return &CryptoContext{
 		params: params,
 		ringQ:  ringQ,
-		a:      a,
 	}, nil
 }
 
 func Client(ctx *CryptoContext, rw io.ReadWriter, clientID [16]byte, password []byte) ([]byte, error) {
 	if _, err := rw.Write(clientID[:]); err != nil {
 		return nil, fmt.Errorf("failed to send client ID: %w", err)
+	}
+
+	serverID := make([]byte, 16)
+	if _, err := rw.Read(serverID); err != nil {
+		return nil, fmt.Errorf("failed to read server ID: %w", err)
+	}
+
+	a, err := polyseed.NewPolyFromSeed(ctx.ringQ, append(clientID[:], serverID...))
+	if err != nil {
+		return nil, err
 	}
 
 	prng, err := sampling.NewPRNG()
@@ -87,7 +87,7 @@ func Client(ctx *CryptoContext, rw io.ReadWriter, clientID [16]byte, password []
 
 	// alpha = a * s_C + 2e_C
 	alpha := ctx.ringQ.NewPoly()
-	ctx.ringQ.MulCoeffsMontgomery(ctx.a, s_C, alpha)
+	ctx.ringQ.MulCoeffsMontgomery(*a, s_C, alpha)
 	ctx.ringQ.MulScalarThenAdd(e_C, 2, alpha)
 
 	// Compute gamma = H₁(pw)
@@ -109,12 +109,7 @@ func Client(ctx *CryptoContext, rw io.ReadWriter, clientID [16]byte, password []
 		return nil, fmt.Errorf("failed to send m to server: %w", err)
 	}
 
-	// Receive (serverID, mu, w, k) from server
-	serverID := make([]byte, 16)
-	if _, err := rw.Read(serverID); err != nil {
-		return nil, fmt.Errorf("failed to read server ID: %w", err)
-	}
-
+	// Receive (mu, w, k) from server
 	mu := ctx.ringQ.NewPoly()
 	if _, err := mu.ReadFrom(rw); err != nil {
 		return nil, fmt.Errorf("failed to read mu from server: %w", err)
@@ -190,6 +185,10 @@ func Server(ctx *CryptoContext, rw io.ReadWriter, serverID [16]byte, password []
 		return nil, fmt.Errorf("failed to read client ID: %w", err)
 	}
 
+	if _, err := rw.Write(serverID[:]); err != nil {
+		return nil, fmt.Errorf("failed to send server ID: %w", err)
+	}
+
 	// Derive gamma' = -H₁(pw)
 	hash := sha256.New()
 	hash.Write([]byte(SeedH1))
@@ -230,9 +229,11 @@ func Server(ctx *CryptoContext, rw io.ReadWriter, serverID [16]byte, password []
 	secretGaussian.Read(s_S)
 	errorGaussian.Read(e_S)
 
+	a, err := polyseed.NewPolyFromSeed(ctx.ringQ, append(clientID, serverID[:]...))
+
 	// mu = a * s_S + 2e_S
 	mu := ctx.ringQ.NewPoly()
-	ctx.ringQ.MulCoeffsMontgomery(s_S, ctx.a, mu)
+	ctx.ringQ.MulCoeffsMontgomery(s_S, *a, mu)
 	ctx.ringQ.MulScalarThenAdd(e_S, 2, mu)
 
 	// k_S = alpha * s_S
@@ -269,10 +270,7 @@ func Server(ctx *CryptoContext, rw io.ReadWriter, serverID [16]byte, password []
 	hash.Write(polyseed.Uint64SliceToBytes(gamma_prime.Coeffs[0]))
 	k_prime := hash.Sum(nil)
 
-	// Send (serverID, mu, w, k) to client
-	if _, err := rw.Write(serverID[:]); err != nil {
-		return nil, fmt.Errorf("failed to send server ID: %w", err)
-	}
+	// Send (mu, w, k) to client
 	if _, err := mu.WriteTo(rw); err != nil {
 		return nil, fmt.Errorf("failed to send mu: %w", err)
 	}
