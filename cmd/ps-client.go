@@ -10,16 +10,15 @@ import (
 	"strings"
 	"crypto/rand"
 
+	"golang.org/x/term"
+
 	"github.com/ghostway0/polyseed"
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <link>\n", os.Args[0])
-		os.Exit(1)
-	}
+	link, err := term.ReadPassword(int(os.Stdin.Fd()))
 
-	decoded, err := base64.StdEncoding.DecodeString(os.Args[1])
+	decoded, err := base64.StdEncoding.DecodeString(string(link))
 	if err != nil {
 		log.Fatalf("decode link: %v", err)
 	}
@@ -57,5 +56,5 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 
-	os.Stdout.Write([]byte(hex.EncodeToString(key)))
+	fmt.Println(hex.EncodeToString(key))
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 
 	"github.com/ghostway0/polyseed"
 )
@@ -42,20 +41,21 @@ func main() {
 	link := base64.StdEncoding.EncodeToString([]byte(linkData))
 	fmt.Println(link)
 
-	conn, err := listener.Accept()
-	if err != nil {
-		log.Fatalf("accept: %v", err)
-	}
-	defer conn.Close()
-
 	var key []byte
 	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Fatalf("accept: %v", err)
+		}
+		defer conn.Close()
+
 		key, err = polyseed.Server(ctx, conn, serverID, password)
 		if err == nil {
 			break
 		}
-		log.Fatalf("%v", err)
+
+		log.Printf("%v", err)
 	}
 
-	os.Stdout.Write([]byte(hex.EncodeToString(key)))
+	fmt.Println(hex.EncodeToString(key))
 }
